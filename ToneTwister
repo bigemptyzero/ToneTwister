@@ -1,0 +1,135 @@
+#include "rack.hpp"
+
+using namespace rack;
+
+struct ToneTwister : Module {
+    enum ParamIds {
+        DRIVE_PARAM,
+        TONE_PARAM,
+        TWIST_PARAM,
+        MIX_PARAM,
+        LEVEL_PARAM,
+        MODE_PARAM,
+        NUM_PARAMS
+    };
+    enum InputIds {
+        AUDIO_INPUT,
+        CV_DRIVE_INPUT,
+        CV_TONE_INPUT,
+        CV_TWIST_INPUT,
+        NUM_INPUTS
+    };
+    enum OutputIds {
+        AUDIO_OUTPUT,
+        NUM_OUTPUTS
+    };
+
+    float prevOutput = 0.0f;
+
+    ToneTwister() {
+        config(NUM_PARAMS, NUM_INPUTS, NUM_OUTPUTS);
+        configParam(DRIVE_PARAM, 0.0f, 10.0f, 5.0f, "Drive");
+        configParam(TONE_PARAM, 0.0f, 1.0f, 0.5f, "Tone");
+        configParam(TWIST_PARAM, 0.0f, 1.0f, 0.5f, "Twist");
+        configParam(MIX_PARAM, 0.0f, 1.0f, 0.5f, "Mix");
+        configParam(LEVEL_PARAM, 0.0f, 1.0f, 0.5f, "Level");
+        configParam(MODE_PARAM, 0.0f, 2.0f, 0.0f, "Mode");
+    }
+
+    void process(const ProcessArgs& args) override {
+        float input = inputs[AUDIO_INPUT].getVoltage();
+
+        float drive = params[DRIVE_PARAM].getValue();
+        if (inputs[CV_DRIVE_INPUT].isConnected()) {
+            drive += inputs[CV_DRIVE_INPUT].getVoltage() / 10.0f;
+        }
+        input *= drive;
+
+        float twist = params[TWIST_PARAM].getValue();
+        if (inputs[CV_TWIST_INPUT].isConnected()) {
+            twist += inputs[CV_TWIST_INPUT].getVoltage() / 10.0f;
+        }
+
+        float output = input;
+        int mode = (int)params[MODE_PARAM].getValue();
+        switch (mode) {
+            case 0:
+                output = softClipping(output);
+                break;
+            case 1:
+                output = waveShaping(output, twist);
+                break;
+            case 2:
+                output = bitCrushing(output, twist);
+                break;
+        }
+
+        float tone = params[TONE_PARAM].getValue();
+        if (inputs[CV_TONE_INPUT].isConnected()) {
+            tone += inputs[CV_TONE_INPUT].getVoltage() / 10.0f;
+        }
+        output = lowPassFilter(output, tone * 5000.0f, args.sampleRate);
+
+        float mix = params[MIX_PARAM].getValue();
+        output = mix * output + (1.0f - mix) * input;
+
+        float level = params[LEVEL_PARAM].getValue();
+        output *= level;
+
+        outputs[AUDIO_OUTPUT].setVoltage(output);
+    }
+
+    float softClipping(float in) {
+        if (in > 1.0f)
+            return 1.0f;
+        else if (in < -1.0f)
+            return -1.0f;
+        else
+            return in - (in * in * in) / 3.0f;
+    }
+
+    float waveShaping(float in, float amount) {
+        return tanh(in * amount);
+    }
+
+    float bitCrushing(float in, float amount) {
+        float step = powf(2.0f, roundf(amount * 15.0f));
+        return roundf(in * step) / step;
+    }
+
+    float lowPassFilter(float input, float cutoff, float sampleRate) {
+        float alpha = cutoff / (sampleRate + cutoff);
+        prevOutput += alpha * (input - prevOutput);
+        return prevOutput;
+    }
+};
+
+struct ToneTwisterWidget : ModuleWidget {
+    ToneTwisterWidget(ToneTwister* module) {
+        setModule(module);
+        setPanel(APP->window->loadSvg(asset::plugin(pluginInstance, "res/ToneTwister.svg")));
+
+        addParam(createParam<RoundBlackKnob>(mm2px(Vec(5.1, 30.0)), module, ToneTwister::DRIVE_PARAM));
+        addParam(createParam<RoundBlackKnob>(mm2px(Vec(5.1, 45.0)), module, ToneTwister::TONE_PARAM));
+        addParam(createParam<RoundBlackKnob>(mm2px(Vec(5.1, 60.0)), module, ToneTwister::TWIST_PARAM));
+        addParam(createParam<RoundBlackKnob>(mm2px(Vec(5.1, 75.0)), module, ToneTwister::MIX_PARAM));
+        addParam(createParam<RoundBlackKnob>(mm2px(Vec(5.1, 90.0)), module, ToneTwister::LEVEL_PARAM));
+        addParam(createParam<CKSSThree>(mm2px(Vec(5.1, 105.0)), module, ToneTwister::MODE_PARAM));
+
+        addInput(createInput<PJ301MPort>(mm2px(Vec(5.1, 120.0)), module, ToneTwister::AUDIO_INPUT));
+        addInput(createInput<PJ301MPort>(mm2px(Vec(5.1, 135.0)), module, ToneTwister::CV_DRIVE_INPUT));
+        addInput(createInput<PJ301MPort>(mm2px(Vec(5.1, 150.0)), module, ToneTwister::CV_TONE_INPUT));
+        addInput(createInput<PJ301MPort>(mm2px(Vec(5.1, 165.0)), module, ToneTwister::CV_TWIST_INPUT));
+
+        addOutput(createOutput<PJ301MPort>(mm2px(Vec(5.1, 180.0)), module, ToneTwister::AUDIO_OUTPUT));
+    }
+};
+
+Plugin* pluginInstance; // Ensure this is declared at an appropriate scope
+
+void init(Plugin* p) {
+    pluginInstance = p;
+    // Don't assign slug here. It should be set in the plugin's manifest file.
+}
+
+
